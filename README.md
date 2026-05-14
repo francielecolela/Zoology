@@ -5,7 +5,7 @@ readme_en = """# Species Distribution Modeling — Occurrence Records
 
 This repository contains an **R script** developed in the context of a **Graduate Course in Species Distribution Modeling**. The main goal of the code is to retrieve, filter, clean, and organize species occurrence records within a study area defined by a geographic polygon.
 
-**Author:** X  
+**Author:** Franciele R. Colela 
 **Course:** Species Distribution Modeling  
 **Level:** Graduate Program  
 
