@@ -1,8 +1,7 @@
 # Pontos de ocorrência
-# Vinicius Tonetti - vrtonetti@gmail.com
-# Código ajustado para funcionar com o polígono de São Paulo
+# Franciele Roberta Colela - francielecolela.me@gmail.com / franciele.roberta-colela@unesp.br
 
-# Limpando ambiente do R -------------------------------------------------------
+# Limpando R -------------------------------------------------------
 rm(list = ls())
 
 library(sf)
