@@ -1,0 +1,310 @@
+# Pontos de ocorrência
+# Vinicius Tonetti - vrtonetti@gmail.com
+# Código ajustado para funcionar com o polígono de São Paulo
+
+# Limpando ambiente do R -------------------------------------------------------
+rm(list = ls())
+
+library(sf)
+library(tidyverse)
+library(CoordinateCleaner)
+library(lubridate)
+library(writexl)
+library(rgbif)
+
+### Polígono da área de estudo -------------------------------------------------
+
+af <- sf::st_read(file.choose()) 
+# Quando abrir a janela, selecione o arquivo: SP_UF_2025.shp
+
+sf::st_crs(af) <- "EPSG:4326" 
+# Garantindo que o polígono da área de estudo está em WGS84
+
+plot(af) 
+# Visualizando o arquivo
+
+
+### Pasta onde o arquivo final será salvo --------------------------------------
+
+output <- paste0(getwd(), "/")
+# O arquivo em Excel será salvo na pasta de trabalho atual do R
+
+
+### Criando uma geometria simples para buscar registros no GBIF ----------------
+# Esta caixa envolve o estado de São Paulo.
+# Depois, o próprio código mantém apenas os pontos que caem dentro do polígono real.
+
+bbox_af <- sf::st_bbox(af)
+
+geometry_sp <- paste0(
+  "POLYGON((",
+  bbox_af["xmin"], " ", bbox_af["ymin"], ", ",
+  bbox_af["xmax"], " ", bbox_af["ymin"], ", ",
+  bbox_af["xmax"], " ", bbox_af["ymax"], ", ",
+  bbox_af["xmin"], " ", bbox_af["ymax"], ", ",
+  bbox_af["xmin"], " ", bbox_af["ymin"],
+  "))"
+)
+
+
+### Species names to download occurrence points --------------------------------
+
+# Espécie escolhida
+
+sp <- c("Chiroxiphia caudata")
+sp
+
+
+# Loop species ----------------------------------------------------------------
+
+for(i in 1:length(sp)){
+  
+  # Mensagem no console para acompanhar a execução
+  
+  message("Rodando espécie: ", sp[i])
+  
+  
+  # Downloading and Getting data from GBIF -------------------------------------
+  
+  occ_gbif <- rgbif::occ_data(
+    scientificName = sp[i],
+    hasCoordinate = TRUE,
+    geometry = geometry_sp,
+    limit = 10000
+  ) 
+  
+  
+  # Verificando se o GBIF retornou registros -----------------------------------
+  
+  if(nrow(occ_gbif$data) == 0){
+    message("Nenhum registro encontrado no GBIF para: ", sp[i])
+    next
+  }
+  
+  
+  # Selecting columns of interest from GBIF ------------------------------------
+  
+  occ_data <- occ_gbif$data %>% 
+    dplyr::select(
+      scientificName, 
+      decimalLongitude, 
+      decimalLatitude, 
+      year
+    ) %>% 
+    dplyr::rename(
+      name = scientificName,
+      longitude = decimalLongitude,
+      latitude = decimalLatitude
+    ) %>%
+    dplyr::mutate(
+      longitude = as.numeric(longitude),
+      latitude = as.numeric(latitude),
+      year = as.numeric(year),
+      database = "GBIF"
+    ) %>% 
+    dplyr::filter(!is.na(year))
+  
+  
+  # Verificando se restaram dados com ano ---------------------------------------
+  
+  if(nrow(occ_data) == 0){
+    message("Nenhum registro com ano disponível para: ", sp[i])
+    next
+  }
+  
+  
+  # year > 2000 and < 2025
+  # Justificativa: Desmatamento/Regeneração se mantiveram mais ou menos estáveis nesse período.
+  # Últimos anos apresentaram maior variação - Tonetti et al. in review
+  
+  occ_data_tax_date <- occ_data %>% 
+    dplyr::filter(
+      year >= 2000, 
+      year <= 2025, 
+      !is.na(year)
+    ) %>%  
+    dplyr::arrange(year)
+  
+  
+  # Verificando se restaram dados após o filtro temporal ------------------------
+  
+  if(nrow(occ_data_tax_date) == 0){
+    message("Nenhum registro entre 2000 e 2025 para: ", sp[i])
+    next
+  }
+  
+  
+  # Remove NA ------------------------------------------------------------------
+  
+  occ_data_na <- occ_data_tax_date %>% 
+    tidyr::drop_na(longitude, latitude)
+  
+  occ_data_na[,1] <- sp[i]
+  
+  
+  # Verificando se restaram dados com coordenadas -------------------------------
+  
+  if(nrow(occ_data_na) == 0){
+    message("Nenhum registro com coordenadas válidas para: ", sp[i])
+    next
+  }
+  
+  
+  # Flag data ------------------------------------------------------------------
+  
+  flags_spatial <- CoordinateCleaner::clean_coordinates(
+    x = occ_data_na, 
+    species = "name",
+    lon = "longitude", 
+    lat = "latitude",
+    
+    tests = c(
+      "capitals", 
+      # Tests a radius around adm-0 (country) or adm-1 (state / province) capitals
+      
+      "centroids", 
+      # Radius around country centroids
+      
+      "duplicates", 
+      # Tests for duplicate records within the same species
+      
+      "equal", 
+      # Tests for equal absolute longitude and latitude
+      
+      "gbif", 
+      # Tests a one-degree radius around the GBIF headquarters in Copenhagen, Denmark
+      
+      "institutions", 
+      # Tests a radius around known biodiversity institutions
+      
+      "outliers", 
+      # Tests each species for outlier records
+      
+      "seas", 
+      # Coordinates that fall in the ocean
+      
+      # "urban", 
+      # Tests if coordinates are from urban areas. Switched off by default
+      
+      "validity", 
+      # Checks if coordinates correspond to a lat/lon coordinate reference system
+      
+      "zeros"
+      # Tests for plain zeros, equal latitude and longitude and a radius around the point
+    ),
+    
+    capitals_rad = 1000, 
+    # The radius around capital coordinates in meters. Default = 10000
+    
+    centroids_rad = 1000,  
+    # The radius around centroid coordinates in meters. Default = 1000
+    
+    centroids_detail = "provinces", 
+    # Provinces centroid are considered
+    
+    inst_rad = 500, 
+    # Numeric. The radius around biodiversity institutions coordinates in metres. Default = 100
+    
+    outliers_method = "quantile", 
+    # O tipo de teste estatístico usado para calcular o outlier
+    
+    outliers_mtp = 5 
+    # Fator, por padrão é 5
+  )
+  
+  
+  # Exclude records flagged by any test ----------------------------------------
+  
+  occ_data_tax_date_spa <- occ_data_na %>% 
+    dplyr::filter(flags_spatial$.summary == TRUE)
+  
+  
+  # Verificando se restaram registros após a limpeza ----------------------------
+  
+  if(nrow(occ_data_tax_date_spa) == 0){
+    message("Todos os registros foram removidos pela limpeza espacial para: ", sp[i])
+    next
+  }
+  
+  
+  # Limit filter - using study area polygon ------------------------------------
+  
+  sf_use_s2(FALSE)
+  
+  occ_data_tax_date_spa_lim <- occ_data_tax_date_spa %>% 
+    dplyr::mutate(
+      x = longitude, 
+      y = latitude
+    ) %>% 
+    sf::st_as_sf(
+      coords = c("x", "y"), 
+      crs = 4326
+    ) %>% 
+    st_intersects(
+      ., 
+      af, 
+      sparse = FALSE
+    ) %>%  
+    # Mantém apenas os pontos que estão dentro do polígono da área de estudo
+    
+    tibble::as_tibble() %>% 
+    dplyr::select(V1) %>%
+    dplyr::rename(lim = V1) %>% 
+    dplyr::bind_cols(occ_data_tax_date_spa, .) %>% 
+    dplyr::filter(lim == TRUE) %>% 
+    dplyr::select(-lim)
+  
+  
+  # Verificando se há pontos dentro de São Paulo --------------------------------
+  
+  if(nrow(occ_data_tax_date_spa_lim) == 0){
+    message("Nenhum registro permaneceu dentro do estado de São Paulo para: ", sp[i])
+    next
+  }
+  
+  
+  occ_data_tax_date_spa_lim[,1] <- sp[i]       
+  # Species name
+  
+  data_spp <- occ_data_tax_date_spa_lim  
+  
+  
+  # Visualizando o mapa com os pontos finais -----------------------------------
+  
+  plot(
+    sf::st_geometry(af),
+    main = paste("Ocorrências de", sp[i], "em São Paulo")
+  )
+  
+  points(
+    data_spp$longitude,
+    data_spp$latitude,
+    pch = 16,
+    cex = 0.6
+  )
+  
+  # Observação sobre os dados desta execução:
+  # Para Chiroxiphia caudata, foram obtidos inicialmente 10.000 registros do GBIF.
+  # Após a filtragem temporal e remoção de registros sem coordenadas válidas,
+  # permaneceram 9.958 registros.
+  # A limpeza espacial realizada com o pacote CoordinateCleaner manteve 1.949 registros.
+  # Após o recorte pelo polígono do estado de São Paulo,
+  # restaram 1.390 ocorrências finais, utilizadas no mapa e salvas na planilha.
+  
+  
+  # Salvando a planilha final ---------------------------------------------------
+  
+  writexl::write_xlsx(
+    data_spp, 
+    paste0(
+      output,
+      gsub(" ", "_", unique(data_spp[,"name"])), 
+      ".xlsx"
+    )
+  )
+  
+  message("Arquivo salvo para: ", sp[i])
+  
+}
+
+# End Loop --------------------------------------------------------------------
